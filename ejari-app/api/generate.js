@@ -5,11 +5,7 @@
  * Uses pdf-lib. Coordinates pixel-verified against the official template at 1000px height.
  */
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { TEMPLATE_B64 } from './template.js';
 const PAGE_H = 842;
 
 // Reportlab y = PAGE_H - pdf_top. These match fill_ejari.py exactly.
@@ -72,22 +68,8 @@ export default async function handler(req, res) {
   try {
     const data = req.body;
 
-    // Find the template PDF — try multiple locations for Vercel compatibility
-    const candidates = [
-      path.join(__dirname, '..', 'ejari_template.pdf'),
-      path.join(__dirname, 'ejari_template.pdf'),
-      path.join(process.cwd(), 'ejari_template.pdf'),
-      '/var/task/ejari_template.pdf',
-      '/var/task/ejari-autofill-v6/ejari-app/ejari_template.pdf',
-    ];
-    let templateBytes = null;
-    let usedPath = '';
-    for (const p of candidates) {
-      if (fs.existsSync(p)) { templateBytes = fs.readFileSync(p); usedPath = p; break; }
-    }
-    if (!templateBytes) {
-      return res.status(500).json({ error: 'Template PDF not found. Checked: ' + candidates.join(', ') });
-    }
+    // Load template from embedded base64 (bundled with the function, no filesystem needed)
+    const templateBytes = Buffer.from(TEMPLATE_B64, 'base64');
     const pdfDoc = await PDFDocument.load(templateBytes);
 
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
