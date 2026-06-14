@@ -130,7 +130,7 @@ input.eid{font-family:'IBM Plex Mono',monospace;}
 <div class="bar">
   <div style="width:30px;height:30px;background:var(--gold);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0">🏛️</div>
   <div style="flex:1"><h1>Ejari Contract Generator</h1><p>Dubai Land Department · Unified Tenancy Contract</p></div>
-  <button class="bar-btn" onclick="manageKey()">🔑 Scan Key (Free)</button>
+  <button class="bar-btn" onclick="manageKey()">🔑 Set Scan Key</button>
 </div>
 
 <!-- ── Tabs ── -->
@@ -503,7 +503,7 @@ async function doScan() {
 
   let apiKey=localStorage.getItem('gemini_key');
   if(!apiKey){
-    apiKey=prompt('Enter your Google Gemini API key.\nGet one FREE at aistudio.google.com/apikeys\nStored only in this browser:');
+    apiKey=prompt('Enter your OpenRouter API key to enable scanning.\n\nGet one FREE (no credit card) at:\nopenrouter.ai → Sign up → Keys → Create Key\n\nKey starts with sk-or-v1-...\nStored only in this browser:');
     if(!apiKey||!apiKey.trim()){ btn.disabled=false; btn.textContent='Scan & Fill'; return; }
     localStorage.setItem('gemini_key',apiKey.trim());
     apiKey=apiKey.trim();
@@ -518,41 +518,50 @@ async function doScan() {
   const prompt=prompts[docType]||(scanSide==='back'?prompts.back:prompts.eid);
 
   try{
-    // 20 second timeout
+    // 25 second timeout
     const controller=new AbortController();
-    const timer=setTimeout(()=>controller.abort(),20000);
+    const timer=setTimeout(()=>controller.abort(),25000);
 
-    const isNewKey=apiKey.startsWith('AQ.');
-    const geminiUrl='https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key='+encodeURIComponent(apiKey);
-    const res=await fetch(geminiUrl,{
+    // Use OpenRouter - free tier, proper API key format, no credit card
+    const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
       method:'POST',
       signal:controller.signal,
-      headers:{'Content-Type':'application/json'},
+      headers:{
+        'Content-Type':'application/json',
+        'Authorization':'Bearer '+apiKey,
+        'HTTP-Referer':'https://ejari-autofill.vercel.app',
+        'X-Title':'Ejari Contract Generator'
+      },
       body:JSON.stringify({
-        contents:[{parts:[{inline_data:{mime_type:imgMime,data:imgB64}},{text:prompt}]}],
-        generationConfig:{maxOutputTokens:600,temperature:0}
+        model:'google/gemini-flash-1.5',
+        max_tokens:600,
+        messages:[{role:'user',content:[
+          {type:'image_url',image_url:{url:'data:'+imgMime+';base64,'+imgB64}},
+          {type:'text',text:prompt}
+        ]}]
       })
     });
     clearTimeout(timer);
 
     const responseText=await res.text();
     if(!res.ok){
-      let errMsg='API error '+res.status+': '+responseText.slice(0,200);
-      if(res.status===400||res.status===401||res.status===403){
+      let errMsg='API error '+res.status;
+      if(res.status===401||res.status===403){
         localStorage.removeItem('gemini_key');
-        errMsg='Key rejected ('+res.status+'). The AQ. key may not work as an API key. Try getting a proper AIza... key from aistudio.google.com/apikeys';
+        errMsg='Invalid key. Get a free key at openrouter.ai → Sign up → Keys → Create Key';
+      } else {
+        try{ const e=JSON.parse(responseText); errMsg=e.error?.message||errMsg; }catch{}
       }
       throw new Error(errMsg);
     }
     const data=JSON.parse(responseText);
-    const text=((data.candidates?.[0]?.content?.parts?.[0]?.text)||'').replace(/```json|```/g,'').trim();
-    if(!text) throw new Error('Empty response from AI. Try again.');
+    const text=((data.choices?.[0]?.message?.content)||'').replace(/```json|```/g,'').trim();
+    if(!text) throw new Error('Empty response. Try again.');
     let parsed;
     try{parsed=JSON.parse(text);}catch{
-      // Try to extract JSON from response
       const m=text.match(/\{[\s\S]+\}/);
       if(m) try{parsed=JSON.parse(m[0]);}catch{}
-      if(!parsed) throw new Error('Could not parse AI response. Try a clearer photo.');
+      if(!parsed) throw new Error('Could not read document. Try a clearer photo.');
     }
     showResult(parsed); applyScanned(parsed);
     btn.disabled=false; btn.textContent='✓ Close'; btn.onclick=closeModal;
