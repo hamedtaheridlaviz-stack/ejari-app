@@ -518,37 +518,48 @@ async function doScan() {
   const prompt=prompts[docType]||(scanSide==='back'?prompts.back:prompts.eid);
 
   try{
+    // 20 second timeout
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),20000);
+
     const isNewKey=apiKey.startsWith('AQ.');
-    const geminiUrl=isNewKey
-      ?'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent'
-      :'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key='+apiKey;
-    const geminiHeaders=isNewKey
-      ?{'Content-Type':'application/json','Authorization':'Bearer '+apiKey}
-      :{'Content-Type':'application/json'};
+    const geminiUrl='https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key='+encodeURIComponent(apiKey);
     const res=await fetch(geminiUrl,{
-      method:'POST',headers:geminiHeaders,
+      method:'POST',
+      signal:controller.signal,
+      headers:{'Content-Type':'application/json'},
       body:JSON.stringify({
         contents:[{parts:[{inline_data:{mime_type:imgMime,data:imgB64}},{text:prompt}]}],
         generationConfig:{maxOutputTokens:600,temperature:0}
       })
     });
+    clearTimeout(timer);
+
+    const responseText=await res.text();
     if(!res.ok){
+      let errMsg='API error '+res.status+': '+responseText.slice(0,200);
       if(res.status===400||res.status===401||res.status===403){
         localStorage.removeItem('gemini_key');
-        throw new Error('Invalid or expired key. Tap Retry and enter a fresh key from aistudio.google.com/apikeys');
+        errMsg='Key rejected ('+res.status+'). The AQ. key may not work as an API key. Try getting a proper AIza... key from aistudio.google.com/apikeys';
       }
-      const e=await res.json().catch(()=>({}));
-      throw new Error(e.error?.message||'API error '+res.status);
+      throw new Error(errMsg);
     }
-    const data=await res.json();
+    const data=JSON.parse(responseText);
     const text=((data.candidates?.[0]?.content?.parts?.[0]?.text)||'').replace(/```json|```/g,'').trim();
+    if(!text) throw new Error('Empty response from AI. Try again.');
     let parsed;
-    try{parsed=JSON.parse(text);}catch{throw new Error('Could not read document. Try a clearer photo.');}
+    try{parsed=JSON.parse(text);}catch{
+      // Try to extract JSON from response
+      const m=text.match(/\{[\s\S]+\}/);
+      if(m) try{parsed=JSON.parse(m[0]);}catch{}
+      if(!parsed) throw new Error('Could not parse AI response. Try a clearer photo.');
+    }
     showResult(parsed); applyScanned(parsed);
     btn.disabled=false; btn.textContent='✓ Close'; btn.onclick=closeModal;
   }catch(err){
     const el=document.getElementById('scan-err');
-    el.textContent='⚠️ '+err.message; el.classList.add('on');
+    const msg=err.name==='AbortError'?'Request timed out after 20s. Check your internet connection.':err.message;
+    el.textContent='⚠️ '+msg; el.classList.add('on');
     btn.disabled=false; btn.textContent='Retry';
   }
 }
