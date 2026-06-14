@@ -406,10 +406,11 @@ input.eid { font-family: 'IBM Plex Mono', monospace; letter-spacing: .04em; }
 
 <div class="hdr">
   <div class="hdr-logo">🏛️</div>
-  <div>
+  <div style="flex:1">
     <h1>Ejari Contract Generator</h1>
     <p>Dubai Land Department · Unified Tenancy Contract</p>
   </div>
+  <button onclick="manageApiKey()" style="background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:6px;padding:6px 12px;font-size:11px;cursor:pointer;" title="Manage API key for ID scanning">🔑 API Key</button>
 </div>
 
 <div class="wrap">
@@ -706,6 +707,23 @@ document.getElementById('contractValueInp').addEventListener('input', e => {
   e.target.dataset.touched = '1';
 });
 
+// ── API Key management ─────────────────────────────────────────────────
+function manageApiKey() {
+  const existing = localStorage.getItem('anthropic_api_key');
+  const msg = existing
+    ? `API key is set (${existing.slice(0,12)}...). Enter a new key to replace it, or leave blank and click OK to clear it:`
+    : 'Enter your Anthropic API key to enable ID scanning.\n\nGet one free at console.anthropic.com\n\nIt is stored only in this browser:';
+  const val = prompt(msg, existing || '');
+  if (val === null) return; // cancelled
+  if (val.trim()) {
+    localStorage.setItem('anthropic_api_key', val.trim());
+    alert('API key saved. ID scanning is now enabled.');
+  } else {
+    localStorage.removeItem('anthropic_api_key');
+    alert('API key cleared.');
+  }
+}
+
 // ── Section collapse ───────────────────────────────────────────────────
 function toggle(id) { document.getElementById(id).classList.toggle('collapsed'); }
 
@@ -958,29 +976,85 @@ async function doScan() {
   document.getElementById('scanErr').classList.remove('show');
   document.getElementById('scanResult').classList.remove('show');
 
+  // Get API key - stored locally, never sent to our server
+  let apiKey = localStorage.getItem('anthropic_api_key');
+  if (!apiKey) {
+    apiKey = prompt(
+      'Enter your Anthropic API key to enable ID scanning.\n\n' +
+      'Get one free at console.anthropic.com\n\n' +
+      'Your key is stored only in this browser and sent directly to Anthropic:'
+    );
+    if (!apiKey || !apiKey.trim()) {
+      btn.disabled = false;
+      btn.textContent = 'Scan & Fill';
+      return;
+    }
+    localStorage.setItem('anthropic_api_key', apiKey.trim());
+    apiKey = apiKey.trim();
+  }
+
   try {
-    const res = await fetch('/api/scan-id', {
+    let prompt;
+    if (docType === 'deed') {
+      prompt = 'This is a Dubai Land Department title deed. Extract: owner full name, unit/apartment number, building name, location/area, plot number, property type, total area in square meters, DEWA premises number, Makani number. Return ONLY valid JSON with keys: ownerName, unitNo, buildingName, location, plotNo, propertyType, area, dewaNo, makaniNo. Use null for missing fields.';
+    } else if (docType === 'passport') {
+      prompt = 'This is a passport. Extract: full name in English, passport number, nationality, date of birth (DD/MM/YYYY), gender, expiry date. Return ONLY valid JSON: {fullName, passportNo, nationality, dateOfBirth, gender, expiryDate}. Use null for unclear fields.';
+    } else if (scanSide === 'back') {
+      prompt = 'UAE Emirates ID back side. Extract: address, employer, occupation, expiry date. Return ONLY JSON: {address, employer, occupation, expiryDate}. null for missing.';
+    } else {
+      prompt = 'UAE Emirates ID front side. Extract: full name in English, Emirates ID number (format 784-XXXX-XXXXXXX-X), nationality, date of birth DD/MM/YYYY, gender, expiry date. Return ONLY valid JSON: {fullName, emiratesId, nationality, dateOfBirth, gender, expiryDate}. null for unclear fields.';
+    }
+
+    // Call Anthropic API directly from browser - no server hop
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ imageBase64: imgB64, mimeType: imgMime, side: scanSide, docType })
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 600,
+        messages: [{ role: 'user', content: [
+          { type: 'image', source: { type: 'base64', media_type: imgMime || 'image/jpeg', data: imgB64 } },
+          { type: 'text', text: prompt }
+        ]}]
+      })
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Scan failed');
 
-    showScanResult(data);
-    applyScanned(data);
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      // If 401, clear stored key so user can re-enter
+      if (res.status === 401) {
+        localStorage.removeItem('anthropic_api_key');
+        throw new Error('Invalid API key. Please try again with a valid key from console.anthropic.com');
+      }
+      throw new Error(errData.error?.message || `API error ${res.status}`);
+    }
 
+    const result = await res.json();
+    const text = (result.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
+    let parsed;
+    try { parsed = JSON.parse(text); }
+    catch { throw new Error('Could not read document. Please ensure it is clear and well-lit.'); }
+
+    showScanResult(parsed);
+    applyScanned(parsed);
     btn.disabled = false;
     btn.textContent = '✓ Close';
     btn.onclick = closeModal;
+
   } catch (err) {
-    const el = document.getElementById('scanErr');
-    el.textContent = `⚠️ ${err.message} — Please ensure the document is clear and try again.`;
-    el.classList.add('show');
+    const errEl = document.getElementById('scanErr');
+    errEl.textContent = '⚠️ ' + err.message;
+    errEl.classList.add('show');
     btn.disabled = false;
     btn.textContent = 'Retry';
   }
 }
+
 
 function showScanResult(data) {
   const el = document.getElementById('scanResult');
