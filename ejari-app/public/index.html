@@ -533,7 +533,7 @@ async function doScan() {
         'X-Title':'Ejari Contract Generator'
       },
       body:JSON.stringify({
-        model:'google/gemini-2.0-flash-exp:free',
+        model:'meta-llama/llama-4-maverick:free',
         max_tokens:600,
         messages:[{role:'user',content:[
           {type:'image_url',image_url:{url:'data:'+imgMime+';base64,'+imgB64}},
